@@ -1,6 +1,8 @@
 import os
 from datetime import datetime, timezone
 
+import requests
+
 from core import config
 from core.db import connect
 
@@ -8,28 +10,40 @@ TS_FMT = "%Y-%m-%d %H:%M:%S"
 
 
 class AdvisorAgent:
-    """Narrates a chosen scenario in plain English. Uses Claude if an API
-    key is available; otherwise falls back to a deterministic template so
-    the demo never depends on network state.
+    """Narrates a chosen scenario in plain English.
 
-    Per PROPOSAL.md §3, the LLM only narrates — it never decides. Inputs
-    are the scenario row + chosen actions; output is 2-3 short paragraphs.
+    Provider is selected by the `llm.provider` config key:
+      - "ollama"    → POST to a local Ollama server (default; fully offline)
+      - "anthropic" → call Claude via the Anthropic API
+      - anything else / call failure → deterministic template
+
+    Per PROPOSAL.md §3 the LLM only narrates — it never decides. Inputs are
+    the scenario row + chosen actions; output is 2-3 short paragraphs.
     """
 
     def __init__(self, force_template=False):
         self.force_template = force_template
+        self.provider       = (config.get("llm.provider") or "ollama").strip().lower()
         self.model          = config.get("llm.model")
+        self.ollama_url     = config.get("llm.ollama_url") or "http://localhost:11434"
         self.api_key_env    = config.get("llm.api_key_env")
+        self.timeout_s      = config.get("llm.timeout_s") or 60
 
     def narrate(self, scenario_id):
         ctx = self._fetch(scenario_id)
-        if self.force_template or not self._api_key():
+        if self.force_template:
             text, model = self._template(ctx), "template"
         else:
             try:
-                text, model = self._claude(ctx), self.model
+                if self.provider == "ollama":
+                    text, model = self._ollama(ctx), f"ollama:{self.model}"
+                elif self.provider == "anthropic" and self._api_key():
+                    text, model = self._claude(ctx), self.model
+                else:
+                    text, model = self._template(ctx), "template"
             except Exception as e:
-                text, model = self._template(ctx) + f"\n\n(LLM fallback: {type(e).__name__})", "template"
+                text  = self._template(ctx) + f"\n\n(LLM fallback: {type(e).__name__}: {e})"
+                model = "template"
         self._save(scenario_id, text, model)
         return text, model
 
@@ -101,16 +115,14 @@ class AdvisorAgent:
             f"actuator execution noise and grid intensity forecast error."
         )
 
-    def _claude(self, ctx):
-        import anthropic
+    def _build_prompt(self, ctx):
         s = ctx["scenario"]
         b = ctx["building"]
         action_lines = "\n".join(
             f"  - {a['kind']:<10} {a['ts_start']} → {a['ts_end']}  Δ={a['kwh_delta']:+.2f} kWh"
             for a in ctx["actions"]
         )
-
-        prompt = (
+        return (
             "You are a clean-energy operations advisor narrating a chosen carbon-optimization plan. "
             "Write 2-3 short paragraphs (about 150 words total) in clear, confident operator English. "
             "Do NOT recommend changes — the optimizer has already decided. Explain WHY the plan saves "
@@ -124,11 +136,32 @@ class AdvisorAgent:
             f"Chosen actions:\n{action_lines}\n"
         )
 
+    def _ollama(self, ctx):
+        url = self.ollama_url.rstrip("/") + "/api/generate"
+        resp = requests.post(
+            url,
+            json={
+                "model":   self.model,
+                "prompt":  self._build_prompt(ctx),
+                "stream":  False,
+                "options": {"temperature": 0.4, "num_predict": 600},
+            },
+            timeout=self.timeout_s,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        text = (data.get("response") or "").strip()
+        if not text:
+            raise RuntimeError("ollama returned empty response")
+        return text
+
+    def _claude(self, ctx):
+        import anthropic
         client = anthropic.Anthropic(api_key=self._api_key())
         resp = client.messages.create(
             model=self.model,
             max_tokens=600,
-            messages=[{"role": "user", "content": prompt}],
+            messages=[{"role": "user", "content": self._build_prompt(ctx)}],
         )
         return resp.content[0].text.strip()
 

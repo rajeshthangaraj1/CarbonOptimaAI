@@ -25,8 +25,11 @@ DEFAULTS = {
     "impact.delta_noise":             (0.10,                    "float"),
     "impact.intensity_noise":         (0.05,                    "float"),
     "demo.top_n_windows":             (8,                       "int"),
-    "llm.model":                      ("claude-sonnet-4-6",     "str"),
+    "llm.provider":                   ("ollama",                "str"),
+    "llm.model":                      ("gemma4:e4b",            "str"),
+    "llm.ollama_url":                 ("http://localhost:11434","str"),
     "llm.api_key_env":                ("ANTHROPIC_API_KEY",     "str"),
+    "llm.timeout_s":                  (60,                      "int"),
     "demo.peak_window_start":         ("14:00",                 "str"),
     "demo.peak_window_end":           ("17:00",                 "str"),
 }

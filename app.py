@@ -5,17 +5,21 @@ Reads from data/carbon_optima.db. Run:
 
 The dashboard is read-only by default. The sidebar has two write actions:
 "Re-run optimizer" replays Strategy → Orchestration → Impact for the top-N
-anomaly windows; "Re-narrate top scenario" calls AdvisorAgent (Claude API
-if ANTHROPIC_API_KEY is set, deterministic template otherwise).
+anomaly windows; "Re-narrate top scenario" calls AdvisorAgent (provider
+selected by `llm.provider` in the Settings tab — defaults to local Ollama,
+falls back to a deterministic template if the call fails).
 """
 import os
 
 import pandas as pd
 import plotly.graph_objects as go
+import requests
 import streamlit as st
 
 from core import config
 from core.db import connect
+
+config.seed_defaults()
 
 st.set_page_config(
     page_title="CarbonOptimaAI",
@@ -233,6 +237,21 @@ def fig_action_bars(actions_df):
     return fig
 
 
+@st.cache_data(ttl=10)
+def _ollama_health():
+    url = (config.get("llm.ollama_url") or "http://localhost:11434").rstrip("/")
+    try:
+        r = requests.get(url + "/api/tags", timeout=2)
+        r.raise_for_status()
+        tags = [m.get("name", "") for m in r.json().get("models", [])]
+        wanted = config.get("llm.model")
+        if wanted in tags:
+            return True, f"server up · `{wanted}` ready"
+        return False, f"server up but `{wanted}` not pulled (have {len(tags)} models)"
+    except Exception as e:
+        return False, f"unreachable ({type(e).__name__})"
+
+
 def render_sidebar():
     with st.sidebar:
         st.subheader("🏢 Building")
@@ -266,9 +285,19 @@ def render_sidebar():
             st.success(f"Narration written via {model}")
             st.rerun()
 
-        api_present = bool(os.environ.get(config.get("llm.api_key_env"), "").strip())
-        st.caption("LLM: " + ("✅ API key detected" if api_present
-                              else f"⚠️ ${config.get('llm.api_key_env')} not set — template narration"))
+        provider = (config.get("llm.provider") or "ollama").lower()
+        model    = config.get("llm.model")
+        if provider == "ollama":
+            ok, hint = _ollama_health()
+            badge = "✅" if ok else "⚠️"
+            st.caption(f"{badge} LLM: ollama · `{model}` · {hint}")
+        elif provider == "anthropic":
+            api_present = bool(os.environ.get(config.get("llm.api_key_env"), "").strip())
+            badge = "✅" if api_present else "⚠️"
+            hint  = "API key detected" if api_present else f"${config.get('llm.api_key_env')} not set — template fallback"
+            st.caption(f"{badge} LLM: anthropic · `{model}` · {hint}")
+        else:
+            st.caption(f"⚠️ LLM provider `{provider}` unknown — template narration")
 
 
 def tab_live(scenarios):
@@ -468,6 +497,77 @@ def tab_advisor(scenarios):
     st.markdown(narration["text"])
 
 
+def tab_settings():
+    st.subheader("LLM provider")
+    st.caption(
+        "The Advisor agent narrates scenarios using one of these providers. "
+        "Ollama runs fully offline; Anthropic requires an API key in the env var below. "
+        "If a call fails, the agent falls back to a deterministic template."
+    )
+
+    provider_now = (config.get("llm.provider") or "ollama").lower()
+    options = ["ollama", "anthropic", "template"]
+    idx = options.index(provider_now) if provider_now in options else 0
+
+    with st.form("llm_settings"):
+        provider = st.selectbox("Provider", options, index=idx)
+        model = st.text_input(
+            "Model",
+            value=config.get("llm.model") or "",
+            help="For Ollama: the local model tag (e.g. gemma4:e4b). For Anthropic: a Claude model id.",
+        )
+        ollama_url = st.text_input(
+            "Ollama URL",
+            value=config.get("llm.ollama_url") or "http://localhost:11434",
+            help="Base URL of the local Ollama server. Only used when provider = ollama.",
+        )
+        api_key_env = st.text_input(
+            "Anthropic API key env var",
+            value=config.get("llm.api_key_env") or "ANTHROPIC_API_KEY",
+            help="Name of the shell env var that holds the key. The key itself is never stored in the DB.",
+        )
+        timeout_s = st.number_input(
+            "Request timeout (seconds)",
+            min_value=5, max_value=600, step=5,
+            value=int(config.get("llm.timeout_s") or 60),
+        )
+        saved = st.form_submit_button("Save settings", type="primary")
+
+    if saved:
+        config.put("llm.provider",    provider,        "str")
+        config.put("llm.model",       model.strip(),   "str")
+        config.put("llm.ollama_url",  ollama_url.strip(), "str")
+        config.put("llm.api_key_env", api_key_env.strip(), "str")
+        config.put("llm.timeout_s",   int(timeout_s),  "int")
+        st.cache_data.clear()
+        st.success("Saved. The next narration will use the new settings.")
+        st.rerun()
+
+    st.divider()
+    st.subheader("Live status")
+
+    if provider_now == "ollama":
+        ok, hint = _ollama_health()
+        st.write(("✅ " if ok else "⚠️ ") + f"Ollama: {hint}")
+        st.caption(f"URL: `{config.get('llm.ollama_url')}`  ·  Model: `{config.get('llm.model')}`")
+        with st.expander("How to install the model on Ollama"):
+            st.code(f"ollama pull {config.get('llm.model')}", language="bash")
+    elif provider_now == "anthropic":
+        env = config.get("llm.api_key_env")
+        present = bool(os.environ.get(env, "").strip())
+        st.write(("✅ " if present else "⚠️ ") + f"`${env}` " + ("detected" if present else "not set"))
+        st.caption(f"Model: `{config.get('llm.model')}`")
+    else:
+        st.info("Provider set to template — no LLM is called.")
+
+    st.divider()
+    st.subheader("All config keys")
+    st.caption("Read-only view of the `config` table. Edit by extending this tab or via `core.config.put()`.")
+    rows = sorted(config.all_().items())
+    df = pd.DataFrame([{"key": k, "value": v} for k, v in rows])
+    st.dataframe(df, use_container_width=True, hide_index=True)
+
+
 def main():
     st.title("🌿 CarbonOptimaAI")
     st.caption(
@@ -483,6 +583,7 @@ def main():
         "🚨 Anomalies",
         "📈 Scenarios",
         "💬 Advisor",
+        "⚙️ Settings",
     ])
     with tabs[0]:
         tab_live(scenarios)
@@ -492,6 +593,8 @@ def main():
         tab_scenarios(scenarios)
     with tabs[3]:
         tab_advisor(scenarios)
+    with tabs[4]:
+        tab_settings()
 
 
 if __name__ == "__main__":

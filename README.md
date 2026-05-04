@@ -4,8 +4,6 @@ Hourly carbon optimization for UAE buildings — an 8-agent pipeline that detect
 
 Built for the **DEWA CleanTech Hackathon 2026**. Aligned with the UAE Net Zero 2050 strategy: every kWh of building load is scored against the *actual hourly* mix of gas, MBR solar, and Barakah nuclear — not a flat emission factor.
 
-> See [`PROPOSAL.md`](PROPOSAL.md) for the full hackathon submission (problem, differentiation, agent roster, build plan, demo flow).
-
 ## What it does
 
 1. Ingests a year of hourly building consumption + UAE weather + grid intensity (synthetic in v1, swappable for bayanat.ae).
@@ -67,8 +65,6 @@ data/           # synthetic.py + carbon_optima.db (created on bootstrap)
 models/         # grid_intensity.py — shared UAE generation-mix model
 app.py          # Streamlit dashboard
 bootstrap.py    # init + run full pipeline; exposes run_optimizer() for the dashboard
-PROPOSAL.md     # hackathon submission
-CLAUDE.md       # contributor guide for Claude Code
 ```
 
 ## Configuration
