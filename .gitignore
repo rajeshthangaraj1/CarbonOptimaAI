@@ -53,5 +53,6 @@ htmlcov/
 # Claude Code / project docs (local only)
 .claude/
 CLAUDE.md
-PROPOSAL.md
-PROJECT_EXPLANATION.md
+#PROPOSAL.md
+#PROJECT_EXPLANATION.md
+#PROJECT_EXPLANATION.docx
